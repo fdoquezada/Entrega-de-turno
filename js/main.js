@@ -3,6 +3,13 @@ document.addEventListener('DOMContentLoaded', function() {
     initApp();
 });
 
+// ========== ALERTA AL RECARGAR / SALIR ==========
+window.addEventListener('beforeunload', function(e) {
+    e.preventDefault();
+    e.returnValue = '¿Seguro que deseas salir? Los datos ingresados se perderán.';
+    return e.returnValue;
+});
+
 function initApp() {
     // Configurar fecha actual
     const today = new Date();
@@ -215,6 +222,8 @@ function collectData() {
     const saliente = document.getElementById('turnoSaliente').value;
     const entrante = document.getElementById('turnoEntrante').value;
     const obs = document.getElementById('observaciones').value;
+    const respEntrega = document.getElementById('responsableEntrega').value;
+    const respRecepcion = document.getElementById('responsableRecepcion').value;
 
     // Servicios
     const clientes = [
@@ -270,6 +279,7 @@ function collectData() {
 
     return {
         fecha, fechaRaw, horaI, horaT, saliente, entrante, obs,
+        respEntrega, respRecepcion,
         srvRows, totalA, totalU, desvs, pends
     };
 }
@@ -293,6 +303,8 @@ function clearForm() {
     document.getElementById('observaciones').value = '';
     document.getElementById('turnoSaliente').value = '';
     document.getElementById('turnoEntrante').value = '';
+    document.getElementById('responsableEntrega').value = '';
+    document.getElementById('responsableRecepcion').value = '';
     
     document.querySelectorAll('.srv-activos, .srv-urgencia').forEach(input => {
         input.value = '';
@@ -356,16 +368,24 @@ function exportPDF() {
     fixPrintObservations();
     
     // Mostrar mensaje
-    showToast('Preparando PDF con todas las observaciones...');
+    showToast('Preparando PDF horizontal (A4)...');
+
+    // Insertar estilo temporal para forzar orientación landscape
+    const styleEl = document.createElement('style');
+    styleEl.id = 'force-landscape-style';
+    styleEl.textContent = '@page { size: A4 landscape !important; margin: 8mm !important; }';
+    document.head.appendChild(styleEl);
     
     // Imprimir después de un pequeño retraso
     setTimeout(() => {
         window.print();
-    }, 100);
+    }, 150);
     
     // Restaurar después de imprimir
     window.addEventListener('focus', function onFocus() {
         restoreTextarea();
+        const forcedStyle = document.getElementById('force-landscape-style');
+        if (forcedStyle) forcedStyle.remove();
         window.removeEventListener('focus', onFocus);
     });
 }
@@ -373,234 +393,233 @@ function exportPDF() {
 // ========== EXPORTACIÓN A EXCEL ==========
 function exportExcel() {
     const d = collectData();
-    const wb = XLSX.utils.book_new();
-    
-    // Estilos
-    const RED = 'FFC0392B';
-    const WHITE = 'FFFFFFFF';
-    const LGRAY = 'FFF4F6F9';
-    const MGRAY = 'FFD1DAE6';
-    const DARK = 'FF1A202C';
-    const PINK = 'FFFDE8E8';
 
-    function cell(v, opts = {}) {
-        const type = typeof v === 'number' ? 'n' : 's';
-        const cell = { v, t: type };
-        
-        const style = {
-            font: {
-                sz: opts.title ? 14 : opts.header ? 10 : 9,
-                color: { rgb: opts.title ? RED : opts.wht ? WHITE : DARK },
-                name: 'Arial',
-                bold: opts.bold || opts.header || opts.title || false
-            },
-            alignment: {
-                vertical: 'center',
-                wrapText: true,
-                horizontal: opts.align || 'left'
-            },
-            border: opts.border || opts.header || opts.title ? {
-                top: { style: 'thin', color: { rgb: MGRAY } },
-                bottom: { style: 'thin', color: { rgb: MGRAY } },
-                left: { style: 'thin', color: { rgb: MGRAY } },
-                right: { style: 'thin', color: { rgb: MGRAY } }
-            } : undefined,
-            fill: opts.bg ? {
-                fgColor: { rgb: opts.bg },
-                patternType: 'solid'
-            } : undefined
+    // ── PALETA (sin prefijo FF — xlsx-js-style usa RRGGBB directo) ──
+    const RED     = 'C0392B';
+    const RED_L   = 'FDECEA';
+    const WHITE   = 'FFFFFF';
+    const LGRAY   = 'F4F6F9';
+    const MGRAY   = 'D1DAE6';
+    const DARK    = '1A202C';
+    const MUTED   = '718096';
+    const HDR_TBL = '2C3E50';   // encabezados de tabla gris oscuro
+    const ALTA_BG = 'FDECEA'; const ALTA_FG = 'C0392B';
+    const MED_BG  = 'FFF8E1'; const MED_FG  = 'B7770D';
+    const BAJA_BG = 'E8F5E9'; const BAJA_FG = '27AE60';
+
+    // ── helpers ──────────────────────────────────────────────────────
+    function bd(color) {
+        const s = { style: 'thin', color: { rgb: color || MGRAY } };
+        return { top: s, bottom: s, left: s, right: s };
+    }
+
+    function cell(val, {
+        bold = false, italic = false,
+        fg = DARK, bg = WHITE, sz = 9,
+        align = 'left', wrap = false,
+        border = true, bc = MGRAY
+    } = {}) {
+        const isNum = typeof val === 'number';
+        return {
+            v: val ?? '',
+            t: isNum ? 'n' : 's',
+            s: {
+                font:      { bold, italic, color: { rgb: fg }, sz, name: 'Arial' },
+                fill:      { fgColor: { rgb: bg }, patternType: 'solid' },
+                alignment: { horizontal: align, vertical: 'center', wrapText: wrap },
+                border:    border ? bd(bc) : {}
+            }
         };
-        
-        cell.s = style;
-        return cell;
     }
 
-    function hdrCell(v) {
-        return cell(v, { header: true, bg: RED, wht: true, align: 'center', border: true });
-    }
+    // Atajos
+    const secHdr = v => cell(v, { bold: true, fg: RED,     bg: RED_L,   sz: 10, bc: RED });
+    const tblHdr = v => cell(v, { bold: true, fg: WHITE,   bg: HDR_TBL, sz: 8,  align: 'center', bc: HDR_TBL });
+    const dat    = (v, shade = false, align = 'left', wrap = false) =>
+                        cell(v, { fg: DARK, bg: shade ? LGRAY : WHITE, align, wrap });
+    const tot    = (v, align = 'center') =>
+                        cell(v, { bold: true, fg: RED, bg: RED_L, align, sz: 11, bc: RED });
 
-    function sectionRow(v) {
-        return cell(v, { bold: true, bg: RED, wht: true, border: true });
-    }
-
-    function dataCell(v, shade = false) {
-        return cell(v, { bg: shade ? LGRAY : WHITE, border: true });
-    }
-
-    // Construir hoja
+    // ── construir hoja ───────────────────────────────────────────────
     let R = 0;
     const ws = {};
     const merges = [];
 
-    function setCell(row, col, c) {
-        const addr = XLSX.utils.encode_cell({ r: row, c: col });
-        ws[addr] = c;
+    function sc(row, col, c) {
+        ws[XLSX.utils.encode_cell({ r: row, c: col })] = c;
+    }
+    function mg(r1, c1, r2, c2) {
+        merges.push({ s: { r: r1, c: c1 }, e: { r: r2, c: c2 } });
+        // rellenar celdas esclavas del merge con mismo fondo
+        const anchor = ws[XLSX.utils.encode_cell({ r: r1, c: c1 })];
+        if (anchor) {
+            for (let r = r1; r <= r2; r++) {
+                for (let c = c1; c <= c2; c++) {
+                    if (r === r1 && c === c1) continue;
+                    const addr = XLSX.utils.encode_cell({ r, c });
+                    ws[addr] = {
+                        v: '', t: 's',
+                        s: {
+                            fill:   anchor.s.fill,
+                            border: anchor.s.border || {},
+                            font:   { name: 'Arial', sz: 9 },
+                            alignment: { vertical: 'center' }
+                        }
+                    };
+                }
+            }
+        }
+    }
+    function blankRow(row, c1, c2, bg = WHITE) {
+        for (let c = c1; c <= c2; c++) {
+            sc(row, c, cell('', { bg, border: false }));
+        }
     }
 
-    // Título
-    setCell(R, 0, cell('SERLOG – Entrega de Turno: Control y Monitoreo', { title: true, bg: RED, wht: true, border: true }));
-    merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 3 } });
-    setCell(R, 4, cell(d.fecha, { bold: true, bg: LGRAY, border: true, align: 'center' }));
+    // ── TÍTULO ───────────────────────────────────────────────────────
+    blankRow(R, 0, 5, WHITE);
+    sc(R, 0, cell('SERLOG — Entrega de Turno',
+        { bold: true, fg: RED, bg: WHITE, sz: 16, border: false }));
+    mg(R, 0, R, 3);
+    sc(R, 4, cell('Control y Monitoreo',
+        { fg: MUTED, bg: WHITE, sz: 9, align: 'right', border: false }));
     R++;
 
-    // Encabezados turno
-    setCell(R, 0, hdrCell('TURNO SALIENTE'));
-    setCell(R, 1, hdrCell('TURNO ENTRANTE'));
-    setCell(R, 2, hdrCell('HORA INICIO'));
-    setCell(R, 3, hdrCell('HORA TÉRMINO'));
-    setCell(R, 4, hdrCell('FECHA'));
+    // Franja roja
+    for (let c = 0; c < 5; c++)
+        sc(R, c, cell('', { bg: RED, border: false }));
     R++;
 
-    // Valores turno
-    setCell(R, 0, dataCell(d.saliente));
-    setCell(R, 1, dataCell(d.entrante));
-    setCell(R, 2, dataCell(d.horaI));
-    setCell(R, 3, dataCell(d.horaT));
-    setCell(R, 4, dataCell(d.fecha));
-    R += 2;
+    // Fecha centrada
+    sc(R, 0, cell(d.fecha, { bold: true, fg: DARK, bg: LGRAY, sz: 10, align: 'center' }));
+    mg(R, 0, R, 4); R++;
+    blankRow(R, 0, 4, WHITE); R++;
 
-    // Servicios
-    setCell(R, 0, sectionRow('RESUMEN DE SERVICIOS MONITOREADOS'));
-    merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
+    // ── SECCIÓN 1 — INFO TURNO ───────────────────────────────────────
+    sc(R, 0, secHdr('  1   INFORMACIÓN DEL TURNO'));
+    mg(R, 0, R, 4); R++;
+
+    ['TURNO SALIENTE','TURNO ENTRANTE','FECHA','HORA INICIO','HORA TÉRMINO']
+        .forEach((l, i) => sc(R, i, tblHdr(l)));
     R++;
 
-    setCell(R, 0, hdrCell('CUENTA / CLIENTE'));
-    setCell(R, 1, hdrCell('ACTIVOS'));
-    setCell(R, 2, hdrCell('SERVICIOS URGENCIA'));
-    merges.push({ s: { r: R, c: 2 }, e: { r: R, c: 4 } });
+    [d.saliente, d.entrante, d.fecha, d.horaI, d.horaT].forEach((v, i) =>
+        sc(R, i, cell(v, { bold: true, fg: RED, bg: LGRAY, sz: 10, align: 'center' }))
+    );
     R++;
+
+    // Responsables — header
+    sc(R, 0, tblHdr('RESPONSABLE ENTREGA DE TURNO'));   mg(R, 0, R, 1);
+    sc(R, 2, tblHdr('RESPONSABLE RECEPCIÓN DE TURNO')); mg(R, 2, R, 4); R++;
+
+    // Responsables — valores
+    sc(R, 0, dat(d.respEntrega   || '')); mg(R, 0, R, 1);
+    sc(R, 2, dat(d.respRecepcion || '')); mg(R, 2, R, 4); R++;
+    blankRow(R, 0, 4, WHITE); R++;
+
+    // ── SECCIÓN 2 — SERVICIOS ────────────────────────────────────────
+    sc(R, 0, secHdr('  2   RESUMEN DE SERVICIOS MONITOREADOS'));
+    mg(R, 0, R, 4); R++;
+
+    sc(R, 0, tblHdr('CUENTA / CLIENTE'));
+    sc(R, 1, tblHdr('ACTIVOS'));    mg(R, 1, R, 2);
+    sc(R, 3, tblHdr('SERVICIOS URGENCIA')); mg(R, 3, R, 4); R++;
 
     d.srvRows.forEach((row, i) => {
-        const shade = i % 2 === 1;
-        setCell(R, 0, dataCell(row.cliente, shade));
-        setCell(R, 1, cell(row.activos, { bg: shade ? LGRAY : WHITE, border: true, align: 'center' }));
-        setCell(R, 2, dataCell(row.urgencia, shade));
-        merges.push({ s: { r: R, c: 2 }, e: { r: R, c: 4 } });
+        const sh = i % 2 === 1;
+        sc(R, 0, dat(row.cliente, sh));
+        sc(R, 1, cell(row.activos,
+            { bold: true, fg: row.activos > 0 ? RED : DARK,
+              bg: sh ? LGRAY : WHITE, align: 'center', sz: 10 }));
+        mg(R, 1, R, 2);
+        sc(R, 3, dat(String(row.urgencia), sh, 'center')); mg(R, 3, R, 4);
         R++;
     });
 
-    // Totales servicios
-    setCell(R, 0, cell('TOTAL', { bold: true, bg: PINK, border: true }));
-    setCell(R, 1, cell(d.totalA, { bold: true, bg: PINK, border: true, align: 'center' }));
-    setCell(R, 2, cell(d.totalU, { bold: true, bg: PINK, border: true, align: 'center' }));
-    merges.push({ s: { r: R, c: 2 }, e: { r: R, c: 4 } });
-    R += 2;
-
-    // Desviaciones
-    setCell(R, 0, sectionRow('DESVIACIONES RELEVANTES DEL TURNO'));
-    merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
+    sc(R, 0, tot('TOTAL', 'left'));
+    sc(R, 1, tot(d.totalA));       mg(R, 1, R, 2);
+    sc(R, 3, tot(d.totalU));       mg(R, 3, R, 4);
     R++;
+    blankRow(R, 0, 4, WHITE); R++;
 
-    setCell(R, 0, hdrCell('TIPO DE DESVIACIÓN'));
-    setCell(R, 1, hdrCell('DETALLE'));
-    setCell(R, 2, hdrCell('ESTADO / GESTIÓN REALIZADA'));
-    setCell(R, 3, hdrCell('RESPONSABLE / ESCALAMIENTO'));
-    merges.push({ s: { r: R, c: 3 }, e: { r: R, c: 4 } });
-    R++;
+    // ── SECCIÓN 3 — DESVIACIONES ─────────────────────────────────────
+    sc(R, 0, secHdr('  3   DESVIACIONES RELEVANTES DEL TURNO'));
+    mg(R, 0, R, 4); R++;
 
-    if (d.desvs.length === 0 || d.desvs.every(x => !x.tipo && !x.detalle)) {
-        setCell(R, 0, dataCell('Sin desviaciones registradas'));
-        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-        R++;
+    sc(R, 0, tblHdr('TIPO DE DESVIACIÓN'));
+    sc(R, 1, tblHdr('DETALLE'));
+    sc(R, 2, tblHdr('ESTADO / GESTIÓN REALIZADA'));
+    sc(R, 3, tblHdr('RESPONSABLE / ESCALAMIENTO')); mg(R, 3, R, 4); R++;
+
+    const hasDesvs = d.desvs.some(x => x.tipo || x.detalle);
+    if (!hasDesvs) {
+        sc(R, 0, dat('Sin desviaciones registradas')); mg(R, 0, R, 4); R++;
     } else {
         d.desvs.forEach((row, i) => {
-            const shade = i % 2 === 1;
-            setCell(R, 0, dataCell(row.tipo, shade));
-            setCell(R, 1, dataCell(row.detalle, shade));
-            setCell(R, 2, dataCell(row.estado, shade));
-            setCell(R, 3, dataCell(row.resp, shade));
-            merges.push({ s: { r: R, c: 3 }, e: { r: R, c: 4 } });
-            R++;
+            const sh = i % 2 === 1;
+            sc(R, 0, dat(row.tipo,   sh)); sc(R, 1, dat(row.detalle, sh));
+            sc(R, 2, dat(row.estado, sh));
+            sc(R, 3, dat(row.resp,   sh)); mg(R, 3, R, 4); R++;
         });
     }
-    R++;
+    blankRow(R, 0, 4, WHITE); R++;
 
-    // Observaciones - VERSIÓN CORREGIDA
-    setCell(R, 0, sectionRow('OBSERVACIONES GENERALES DEL TURNO'));
-    merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-    R++;
+    // ── SECCIÓN 4 — OBSERVACIONES ────────────────────────────────────
+    sc(R, 0, secHdr('  4   OBSERVACIONES GENERALES DEL TURNO'));
+    mg(R, 0, R, 4); R++;
 
-    if (d.obs && d.obs.trim() !== '') {
-        const lines = d.obs.split('\n').filter(line => line.trim() !== '');
-        
-        if (lines.length > 0) {
-            lines.forEach((line, index) => {
-                const shade = index % 2 === 1;
-                const numberedLine = `${index + 1}. ${line.trim()}`;
-                setCell(R, 0, cell(numberedLine, { bg: shade ? LGRAY : WHITE, border: true }));
-                merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-                
-                const cellAddr = XLSX.utils.encode_cell({ r: R, c: 0 });
-                ws[cellAddr].s.alignment = { 
-                    wrapText: true, 
-                    vertical: 'top',
-                    horizontal: 'left' 
-                };
-                
-                R++;
-            });
-        } else {
-            setCell(R, 0, cell('Sin observaciones', { bg: WHITE, border: true, align: 'left' }));
-            merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-            R++;
-        }
+    if (d.obs && d.obs.trim()) {
+        d.obs.split('\n').filter(l => l.trim()).forEach((line, idx) => {
+            const sh = idx % 2 === 1;
+            sc(R, 0, cell(`${idx + 1}.  ${line.trim()}`,
+                { fg: DARK, bg: sh ? LGRAY : WHITE, wrap: true }));
+            mg(R, 0, R, 4); R++;
+        });
     } else {
-        setCell(R, 0, cell('Sin observaciones', { bg: WHITE, border: true, align: 'left' }));
-        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-        R++;
+        sc(R, 0, dat('Sin observaciones')); mg(R, 0, R, 4); R++;
     }
-    R++;
+    blankRow(R, 0, 4, WHITE); R++;
 
-    // Pendientes
-    setCell(R, 0, sectionRow('PENDIENTES A SEGUIR EN PRÓXIMO TURNO'));
-    merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-    R++;
+    // ── SECCIÓN 5 — PENDIENTES ───────────────────────────────────────
+    sc(R, 0, secHdr('  5   PENDIENTES A SEGUIR EN PRÓXIMO TURNO'));
+    mg(R, 0, R, 4); R++;
 
-    setCell(R, 0, hdrCell('PENDIENTE'));
-    setCell(R, 1, hdrCell('PRIORIDAD'));
-    setCell(R, 2, hdrCell('RESPONSABLE SIGUIENTE TURNO'));
-    merges.push({ s: { r: R, c: 2 }, e: { r: R, c: 4 } });
-    R++;
+    sc(R, 0, tblHdr('PENDIENTE'));  mg(R, 0, R, 2);
+    sc(R, 3, tblHdr('PRIORIDAD'));
+    sc(R, 4, tblHdr('RESPONSABLE SIGUIENTE TURNO')); R++;
 
-    if (d.pends.length === 0) {
-        setCell(R, 0, dataCell('Sin pendientes registrados'));
-        merges.push({ s: { r: R, c: 0 }, e: { r: R, c: 4 } });
-        R++;
+    const prioCfg = {
+        ALTA:  { bg: ALTA_BG, fg: ALTA_FG },
+        MEDIA: { bg: MED_BG,  fg: MED_FG  },
+        BAJA:  { bg: BAJA_BG, fg: BAJA_FG }
+    };
+
+    if (!d.pends.length) {
+        sc(R, 0, dat('Sin pendientes')); mg(R, 0, R, 4); R++;
     } else {
         d.pends.forEach((row, i) => {
-            const shade = i % 2 === 1;
-            setCell(R, 0, dataCell(row.pendiente, shade));
-            
-            const prioColors = {
-                'ALTA': 'FFFDE8E8',
-                'MEDIA': 'FFFFF8E1',
-                'BAJA': 'FFE8F5E9'
-            };
-            setCell(R, 1, cell(row.prioridad, { 
-                bg: prioColors[row.prioridad] || WHITE, 
-                border: true, 
-                align: 'center', 
-                bold: true 
-            }));
-            
-            setCell(R, 2, dataCell(row.responsable, shade));
-            merges.push({ s: { r: R, c: 2 }, e: { r: R, c: 4 } });
-            R++;
+            const sh = i % 2 === 1;
+            const pc = prioCfg[row.prioridad] || { bg: WHITE, fg: DARK };
+            sc(R, 0, dat(row.pendiente, sh, 'left', true)); mg(R, 0, R, 2);
+            sc(R, 3, cell(row.prioridad,
+                { bold: true, fg: pc.fg, bg: pc.bg, align: 'center', bc: pc.fg }));
+            sc(R, 4, dat(row.responsable, sh)); R++;
         });
     }
+    blankRow(R, 0, 4, WHITE); R++;
 
-    // Configurar hoja
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R, c: 4 } });
+    // ── PIE ──────────────────────────────────────────────────────────
+    sc(R, 0, cell('#CulturadelRespeto  ·  SERLOG Control y Monitoreo  ·  Entrega de Turno',
+        { italic: true, fg: MUTED, bg: WHITE, sz: 7, align: 'center', border: false }));
+    mg(R, 0, R, 4);
+
+    // ── CONFIGURACIÓN FINAL ───────────────────────────────────────────
+    ws['!ref']    = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R, c: 4 } });
     ws['!merges'] = merges;
-    ws['!cols'] = [
-        { wch: 32 },
-        { wch: 14 },
-        { wch: 32 },
-        { wch: 26 },
-        { wch: 16 }
-    ];
+    ws['!cols']   = [{ wch: 30 }, { wch: 12 }, { wch: 16 }, { wch: 28 }, { wch: 24 }];
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Entrega Turno');
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, d.fechaRaw || 'Turno');
     XLSX.writeFile(wb, `Entrega_Turno_${d.fechaRaw}.xlsx`);
     showToast('✓ Excel descargado correctamente');
 }
